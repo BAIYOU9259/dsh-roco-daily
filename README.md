@@ -32,10 +32,10 @@
 
 ```powershell
 # 1) 把仓库放到固定位置（link 安装要求路径不能乱动）
-git clone <你的仓库地址> "$env:USERPROFILE\.dsh\plugins\dsh-roco-daily"
+git clone https://github.com/BAIYOU9259/dsh-roco-daily.git "$env:USERPROFILE\.dsh\plugins\dsh-roco-daily"
 
-# 2) 注册到 DSH（用应用自带的 CLI）
-& "E:\deepseek\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add "link:$env:USERPROFILE\.dsh\plugins\dsh-roco-daily"
+# 2) 注册到 DSH（桌面端用 --profile desktop；dsh web 用 --profile web）
+dsh plugin --profile desktop add "link:$env:USERPROFILE\.dsh\plugins\dsh-roco-daily"
 
 # 3) 重启 DSH
 ```
