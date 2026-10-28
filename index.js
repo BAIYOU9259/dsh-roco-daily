@@ -101,16 +101,25 @@ export default {
       return !!base && (c.petAnchor?.enabled !== false) && (c.pet?.enabled !== false)
     }
 
+    // 屏幕信息每 2 分钟才重新探测一次：petrect 要起一次 powershell，
+    // 而宠物会自己溜达，/pose 每 10 秒都在变，没必要每次都查窗口矩形。
+    const screenCache = { at: 0, screens: [], rect: null }
+    const probeScreens = (force = false) => {
+      const now = Date.now()
+      if (!force && screenCache.screens.length && now - screenCache.at < 120_000) return screenCache
+      const scr = ps.screens()
+      const rect = ps.petRect('electron')
+      screenCache.screens = scr?.ok ? scr.screens : []
+      screenCache.rect = rect?.ok ? rect.rect : null
+      screenCache.at = now
+      return screenCache
+    }
+
     const snapshot = async () => {
       const pose = await pet.pose(PET_ID)
       if (!pose.ok || !pose.data) return null
-      const scr = ps.screens()
-      const rect = ps.petRect('electron')
-      return makeAnchor({
-        pose: pose.data,
-        screens: scr?.ok ? scr.screens : [],
-        rect: rect?.ok ? rect.rect : null,
-      })
+      const c = probeScreens()
+      return makeAnchor({ pose: pose.data, screens: c.screens, rect: c.rect })
     }
 
     const saveAnchor = async () => {
@@ -129,10 +138,10 @@ export default {
       const saved = readAnchor()
       if (!saved) return { ok: false, reason: 'no-anchor' }
       const pose = await pet.pose(PET_ID)
-      const scr = ps.screens()
+      const scr = probeScreens(true)
       const plan = planRestore({
         saved,
-        screens: scr?.ok ? scr.screens : [],
+        screens: scr.screens,
         pose: pose?.ok ? pose.data : null,
         tolerance: Number(getConfig().petAnchor?.tolerance ?? 0.01),
       })
