@@ -98,6 +98,29 @@ node tools/cli.mjs run
 - 想加步骤：复制一段，改 `id` / `name`，再 `calibrate --step <id>`。
 - 想加多个色点提高判定准确度：往 `anchors` 里多塞几个 `{x,y,rgb}`，**全部命中**才点。
 
+## 桌宠位置（petAnchor）
+
+dsh-pet 自己**不记**位置——每次启动都按 `config.jsonc` 里的 `position.corner` 重算，你拖到哪都没用。本插件补上这一层：
+
+- **记**：每 10 秒把「屏内归一化坐标 + 当时在哪块屏」写进 `~/.dsh/roco-daily/pet-anchor.json`
+- **放回去**：DSH 启动 15 秒后归位一次（等桌宠起来）
+- **换屏按比例**：原来的屏不在了（拔了副屏 / 分辨率变了），用同一组 `nx/ny` 落到现存的屏上，位置等比
+- **不动的时候不动**：同屏且偏差 < 1% 就跳过，不会每 10 秒抖一下
+
+```jsonc
+"petAnchor": { "enabled": true, "saveEveryMs": 10000, "tolerance": 0.01 }
+```
+
+命令行：
+
+```powershell
+node tools/cli.mjs anchor            # 看存档 / 当前位姿 / 窗口矩形 / 屏幕列表
+node tools/cli.mjs anchor --save     # 立刻记一次
+node tools/cli.mjs anchor --restore  # 立刻归位
+```
+
+> 注意：`/position` 只能挪屏内归一化坐标，**不能跨屏搬窗口**。所以"记住在哪个屏"依赖窗口自己启动时落在哪块屏；跨屏恢复要 dsh-pet 上游支持。
+
 ## 排班
 
 - `schedule.enabled = true` 且 DSH 开着 → 到点自动跑（每 30 秒检查一次）。
@@ -108,7 +131,7 @@ node tools/cli.mjs run
 ## 测试
 
 ```powershell
-node --test test/*.test.mjs     # 34 个用例：匹配、排班、配置、执行器、桌宠桥
+node --test test/*.test.mjs     # 47 个用例：匹配、排班、配置、执行器、桌宠桥、位置锚点
 ```
 
 测试全部用假窗口 / 假桌宠，不碰真实鼠标键盘。

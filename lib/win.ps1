@@ -8,10 +8,11 @@
 # ============================================================================
 param(
   [Parameter(Mandatory = $true)]
-  [ValidateSet('window', 'activate', 'cursor', 'probe', 'step', 'shot', 'screen')]
+  [ValidateSet('window', 'activate', 'cursor', 'probe', 'step', 'shot', 'screen', 'screens', 'petrect')]
   [string]$Action,
 
   [string]$Title = '',
+  [string]$Proc = 'electron',
   [string]$Points = '',
   [int]$Tol = 18,
   [int]$TimeoutMs = 8000,
@@ -44,6 +45,34 @@ public class RocoW32 {
   [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
+  public delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumWindowsProc cb, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
+
+  // Largest visible top-level window of a process, as "x,y,w,h"; empty when none.
+  public static string LargestWindowOf(uint pid) {
+    IntPtr best = IntPtr.Zero;
+    long bestArea = 0;
+    EnumWindows((h, l) => {
+      uint p;
+      GetWindowThreadProcessId(h, out p);
+      if (p != pid) return true;
+      if (!IsWindowVisible(h)) return true;
+      RECT r;
+      if (!GetWindowRect(h, out r)) return true;
+      int w = r.Right - r.Left;
+      int hh = r.Bottom - r.Top;
+      if (w < 60 || hh < 60) return true;
+      long area = (long)w * hh;
+      if (area > bestArea) { bestArea = area; best = h; }
+      return true;
+    }, IntPtr.Zero);
+    if (best == IntPtr.Zero) return "";
+    RECT rr;
+    if (!GetWindowRect(best, out rr)) return "";
+    return rr.Left + "," + rr.Top + "," + (rr.Right - rr.Left) + "," + (rr.Bottom - rr.Top);
+  }
 }
 "@
 }
@@ -162,6 +191,28 @@ switch ($Action) {
       $result.foreground = $result.ok
       if (-not $result.ok) { $result.error = 'cannot-foreground' }
     }
+  }
+
+  'screens' {
+    $all = @()
+    foreach ($s in [System.Windows.Forms.Screen]::AllScreens) {
+      $all += @{ deviceName = $s.DeviceName; x = $s.Bounds.X; y = $s.Bounds.Y; w = $s.Bounds.Width; h = $s.Bounds.Height; primary = $s.Primary }
+    }
+    $result.ok = $true
+    $result.screens = $all
+  }
+
+  'petrect' {
+    $best = $null
+    foreach ($pr in @(Get-Process -Name $Proc -ErrorAction SilentlyContinue)) {
+      $spec = [RocoW32]::LargestWindowOf([uint32]$pr.Id)
+      if (-not $spec) { continue }
+      $kv = $spec -split ','
+      $r = @{ x = [int]$kv[0]; y = [int]$kv[1]; w = [int]$kv[2]; h = [int]$kv[3] }
+      if (-not $best -or ($r.w * $r.h) -gt ($best.w * $best.h)) { $best = $r }
+    }
+    if ($best) { $result.ok = $true; $result.rect = $best }
+    else { $result.error = 'pet-window-not-found' }
   }
 
   'cursor' {

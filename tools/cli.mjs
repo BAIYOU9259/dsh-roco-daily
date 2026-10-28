@@ -10,8 +10,10 @@
  */
 import readline from 'node:readline/promises'
 import { stdin as input, stdout as output } from 'node:process'
+import fs from 'node:fs'
 import path from 'node:path'
-import { CONFIG_PATH, readConfig, writeConfig, readState } from '../lib/config.mjs'
+import { CONFIG_PATH, STATE_DIR, readConfig, writeConfig, readState } from '../lib/config.mjs'
+import { makeAnchor, planRestore } from '../lib/anchor.mjs'
 import { makePs } from '../lib/ps.mjs'
 import { runSteps } from '../lib/runner.mjs'
 import { createPetClient } from '../lib/pet.mjs'
@@ -125,7 +127,49 @@ async function main() {
     return
   }
 
-  die(`未知命令 ${cmd}（可用：status / probe / calibrate / run / pet-test）`)
+  if (cmd === 'anchor') {
+    const base = flag('base') || readState().petBase
+    if (!base) die('不知道桌宠地址。先重启 DSH 让插件写入 petBase，或用 --base')
+    const pet = createPetClient({ base, owner: cfg.pet.owner })
+    const anchorPath = path.join(STATE_DIR, 'pet-anchor.json')
+    const readAnchor = () => { try { return JSON.parse(fs.readFileSync(anchorPath, 'utf8')) } catch { return null } }
+
+    const pose = await pet.pose('main')
+    const scr = ps.screens()
+    const rect = ps.petRect('electron')
+    const cur = pose.ok ? makeAnchor({ pose: pose.data, screens: scr.ok ? scr.screens : [], rect: rect.ok ? rect.rect : null }) : null
+
+    if (has('save')) {
+      if (!cur) die('读不到桌宠位姿')
+      fs.mkdirSync(STATE_DIR, { recursive: true })
+      fs.writeFileSync(anchorPath, JSON.stringify(cur, null, 2), 'utf8')
+      console.log('已保存锚点：', JSON.stringify(cur))
+      return
+    }
+
+    if (has('restore')) {
+      const saved = readAnchor()
+      const plan = planRestore({ saved, screens: scr.ok ? scr.screens : [], pose: pose.ok ? pose.data : null, tolerance: cfg.petAnchor.tolerance })
+      console.log('计划：', JSON.stringify({ apply: plan.apply, reason: plan.reason, x: plan.x, y: plan.y }))
+      if (plan.apply) {
+        const r = await pet.moveTo(plan.x, plan.y)
+        console.log(r.ok ? '✓ 已归位' : `✗ ${r.error}`)
+      }
+      return
+    }
+
+    console.log(JSON.stringify({
+      anchorPath,
+      saved: readAnchor(),
+      current: cur,
+      pose: pose.ok ? pose.data : pose.error,
+      petWindow: rect.ok ? rect.rect : rect.error,
+      screens: scr.ok ? scr.screens : scr.error,
+    }, null, 2))
+    return
+  }
+
+  die(`未知命令 ${cmd}（可用：status / probe / calibrate / run / pet-test / anchor）`)
 }
 
 main().catch((e) => die(String(e?.stack || e)))

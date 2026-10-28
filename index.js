@@ -4,15 +4,33 @@
  * 生命周期：DSH 启动时 apply() 跑一次 → 桌宠菜单挂上、排班计时器起来。
  * 运行时零 LLM 调用：全部是本地脚本 + 本地 HTTP。
  */
-import { CONFIG_PATH, readConfig, readState, writeState } from './lib/config.mjs'
+import fs from 'node:fs'
+import path from 'node:path'
+import { CONFIG_PATH, STATE_DIR, readConfig, readState, writeState } from './lib/config.mjs'
 import { makePs } from './lib/ps.mjs'
 import { createPetClient, petBase } from './lib/pet.mjs'
 import { createRunner } from './lib/runner.mjs'
 import { createBridge } from './lib/bridge.mjs'
 import { localDateKey, todaySlotPassed } from './lib/schedule.mjs'
+import { makeAnchor, planRestore } from './lib/anchor.mjs'
 
 const API = '/roco-daily/api'
 const TICK_MS = 30_000
+const ANCHOR_PATH = path.join(STATE_DIR, 'pet-anchor.json')
+const PET_ID = 'main'
+
+function readAnchor() {
+  try { return JSON.parse(fs.readFileSync(ANCHOR_PATH, 'utf8')) } catch { return null }
+}
+
+function writeAnchor(a) {
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true })
+    const tmp = `${ANCHOR_PATH}.tmp-${process.pid}`
+    fs.writeFileSync(tmp, JSON.stringify(a, null, 2), 'utf8')
+    fs.renameSync(tmp, ANCHOR_PATH)
+  } catch {}
+}
 
 function resolvePort(ctx) {
   const ws = ctx?.webServer
@@ -75,6 +93,55 @@ export default {
     const runner = createRunner({ getConfig, pet, ps, log })
     state.runner = runner
 
+    // —— 桌宠锚点：记住它在哪，下次启动放回去 --------------------------------
+    // dsh-pet 自己每次启动都会回到 config 的 corner，不记用户拖到哪。
+    let anchorTimer = null
+    const anchorEnabled = () => {
+      const c = getConfig()
+      return !!base && (c.petAnchor?.enabled !== false) && (c.pet?.enabled !== false)
+    }
+
+    const snapshot = async () => {
+      const pose = await pet.pose(PET_ID)
+      if (!pose.ok || !pose.data) return null
+      const scr = ps.screens()
+      const rect = ps.petRect('electron')
+      return makeAnchor({
+        pose: pose.data,
+        screens: scr?.ok ? scr.screens : [],
+        rect: rect?.ok ? rect.rect : null,
+      })
+    }
+
+    const saveAnchor = async () => {
+      const a = await snapshot()
+      if (!a) return null
+      const prev = readAnchor()
+      if (prev && prev.nx === a.nx && prev.ny === a.ny
+        && prev.screen?.deviceName === a.screen?.deviceName) return prev
+      writeAnchor(a)
+      return a
+    }
+
+    /** DSH 启动若干秒后跑一次：把宠物挪回上次的位置（换屏则按比例）。 */
+    const restoreAnchor = async () => {
+      if (!anchorEnabled()) return { ok: false, reason: 'disabled' }
+      const saved = readAnchor()
+      if (!saved) return { ok: false, reason: 'no-anchor' }
+      const pose = await pet.pose(PET_ID)
+      const scr = ps.screens()
+      const plan = planRestore({
+        saved,
+        screens: scr?.ok ? scr.screens : [],
+        pose: pose?.ok ? pose.data : null,
+        tolerance: Number(getConfig().petAnchor?.tolerance ?? 0.01),
+      })
+      if (!plan.apply) return { ok: true, applied: false, reason: plan.reason }
+      const r = await pet.moveTo(plan.x, plan.y, { petId: PET_ID })
+      log(`[roco-daily] 桌宠归位 → ${plan.x.toFixed(3)},${plan.y.toFixed(3)}（${plan.reason}）`)
+      return { ok: r.ok, applied: r.ok, reason: plan.reason, x: plan.x, y: plan.y, error: r.error }
+    }
+
     // —— 排班：DSH 开着的时候每 30 秒看一眼 ------------------------------------
     let lastTickDay = null
     const tick = async () => {
@@ -120,6 +187,18 @@ export default {
     if (state.timer.unref) state.timer.unref()
     setTimeout(() => { tick() }, 20_000)
 
+    // 桌宠归位：等桌宠起来（首次可能会下载 Electron，给足时间）
+    setTimeout(() => { restoreAnchor().catch(() => {}) }, 15_000)
+    // 之后每 N 秒记一次位置（用户拖动 / 它自己溜达都算"最后位置"）
+    const anchorMs = Math.max(3000, Math.min(120_000, Number(state.cfg.petAnchor?.saveEveryMs) || 10_000))
+    if (base) {
+      anchorTimer = setInterval(() => {
+        if (!anchorEnabled()) return
+        saveAnchor().catch(() => {})
+      }, anchorMs)
+      if (anchorTimer.unref) anchorTimer.unref()
+    }
+
     // —— 本地 HTTP：给设置页 / CLI 用 -----------------------------------------
     try {
       const reg = (pathname, handler) => {
@@ -143,6 +222,7 @@ export default {
           petBase: base,
           configPath: CONFIG_PATH,
           game: getConfig().game,
+          anchor: { path: ANCHOR_PATH, saved: readAnchor() },
         })
       })
 
@@ -164,6 +244,7 @@ export default {
 
     ctx.effect(() => () => {
       try { clearInterval(state.timer) } catch {}
+      try { if (anchorTimer) clearInterval(anchorTimer) } catch {}
       try { bridge.stop() } catch {}
       log('[roco-daily] 已卸载')
     })
