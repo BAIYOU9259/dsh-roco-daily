@@ -6,7 +6,8 @@
   "type": "module",
   "main": "index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./package.json": "./package.json"
   },
   "files": ["index.js", "lib", "tools", "cordis.patch.yml", "README.md", "LICENSE"],
   "dsh": {
